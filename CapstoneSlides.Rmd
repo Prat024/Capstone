@@ -1,0 +1,527 @@
+---
+title: "Capstone: IGN Editor's Choice Award"
+author: "Pratyush Pati"
+
+output: ioslides_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r ign,include=FALSE}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(caTools)
+library(ROCR)
+
+####### Helper Function For Standard Error/CI from R Cookbook ####################
+st.err <- function(x) {
+    sd(x)/sqrt(length(x))
+     }
+
+########## EDA: Data Wrangling #########################
+
+# Obtain original ign dataset
+ign <- read.csv("ign.csv", header=TRUE)
+
+# Creation of the wrangled dataset
+ign_order <- ign[order(ign$title),]
+ign_revised <- ign
+
+# Change class to appropriate types
+ign_revised$title <- as.character(ign_revised$title)
+ign_revised$genre <- as.character(ign_revised$genre)
+
+# Removed games with missing genre 
+ign_revised <- ign_revised %>%
+	  filter(genre != "")
+
+# Filter for games in certain 5 year period (2012-2016)
+year_start <- 2012
+year_end <- 2016
+
+ign_revised <- ign_revised %>% 
+	  filter(release_year >= year_start & release_year <= year_end)
+
+# Filter games released on multiple platform
+multiple_platform <- ign_revised[duplicated(ign_revised$title) | duplicated(ign_revised$title, fromLast=TRUE),]
+
+# Obtain the distinct game platform and order alphabetically
+dis_platform <- as.character(unique(ign_revised$platform)) 
+dis_platform <- sort(dis_platform)
+
+# Removing duplicate title games in main dataset
+ign_revised <- ign_revised[!duplicated(ign_revised$title),]
+
+# Order videogames alphabetically
+ign_revised <- ign_revised[order(ign_revised$title),]
+multiple_platform <- multiple_platform[order(multiple_platform$title),]
+
+# Add distinct platform list as columns to main dataset
+ign_revised[dis_platform] <- as.list(dis_platform)
+
+# Original dataset showing only title and platform
+ign_temp <- ign %>% filter(!is.na(genre)) %>% 
+	  filter(release_year >= year_start & release_year <= year_end) %>% 
+    select(title, platform) 
+
+# Applying 1 (Yes) or 0 (No) to games if they appear in the platform columns
+ign_temp$value = 1
+ign_temp_wide = reshape2::dcast(title ~ platform, data = ign_temp,
+                           value.var = "value", fill = 0)
+
+ign_revised <- merge(ign_revised[1:11], ign_temp_wide, by = "title")
+
+# Remove the old platform column, and unused x1, url columns
+ign_revised <- ign_revised %>% 
+               select(-platform)  
+ign_revised <- ign_revised %>% 
+               select(-X1)
+ign_revised <- ign_revised %>% 
+               select(-url)
+
+# Total Sum of Platform winner of editors award in tidyr form
+df_won <- ign_revised %>% filter(editors_choice == "Y") %>% 
+  select(Android:`Xbox One`) %>% 
+  summarise_each(funs(sum))
+
+df_lost <- ign_revised %>% filter(editors_choice == "N") %>% 
+  select(Android:`Xbox One`) %>% 
+  summarise_each(funs(sum))
+
+tot_platform <- rbind(df_won, df_lost)
+rownames(tot_platform) <- c("Won", "Lost")
+
+tot_platform["award"] <- rownames(tot_platform)
+tot_platform <- melt(tot_platform, id.vars="award", 
+                value.name="Games", variable.name="Platform")
+
+# Total Sum of Platform winner of editors award in horizontal form
+won_sum <- t(df_won)
+lost_sum <- t(df_lost)
+colnames(won_sum) <- c("Won")
+colnames(lost_sum) <- c("Lost")
+tot_platform_2 <-  merge(won_sum, lost_sum, by=0, all=TRUE)
+colnames(tot_platform_2) <- c("Platform", "Won", "Lost")
+tot_platform_2$Platform <- as.character(tot_platform_2$Platform)
+tot_platform_2$Won <- as.numeric(tot_platform_2$Won)
+tot_platform_2$Lost <- as.numeric(tot_platform_2$Lost)
+
+tot_plat2_tidy <- ddply(melt(tot_platform_2, id.vars = 'Platform'),
+                        .(Platform), mutate, prop = value / sum(value))
+tot_plat2_tidy$variable <- as.character(tot_plat2_tidy$variable)
+tot_plat2_tidy$value <- as.numeric(tot_plat2_tidy$value)
+tot_plat2_tidy$prop <- as.numeric(tot_plat2_tidy$prop)
+
+# New column for total number of platforms game appears on
+ign_revised$tot_Plat <- rowSums(ign_revised[,c(9:32)])
+
+# New column for word count of the title
+ign_revised$word_count <- sapply(ign_revised$title, function(x) length(unlist(strsplit(as.character(x), "\\W+"))))
+ign_revised$word_count <- ifelse(grepl("^1$", ign_revised$word_count, ignore.case = T), 1, 
+         ifelse(grepl("^2", ign_revised$word_count, ignore.case = T), 2,
+         ifelse(grepl("^3", ign_revised$word_count, ignore.case = T), 3,        
+         ifelse(grepl("^4", ign_revised$word_count, ignore.case = T), 4,
+         ifelse(grepl("^5", ign_revised$word_count, ignore.case = T), 5,
+         ifelse(grepl("^6", ign_revised$word_count, ignore.case = T), 6,
+         ifelse(grepl("^7", ign_revised$word_count, ignore.case = T), 7,
+         ifelse(grepl("^8", ign_revised$word_count, ignore.case = T), 8,
+         ifelse(grepl("^9", ign_revised$word_count, ignore.case = T), 9, 10))))))))) # 10+ words classified as 10
+
+# New column for character count of title
+ign_revised$char_count <- sapply(ign_revised$title, function(x) nchar(x))
+
+# New column for starting letter/# of title
+ign_revised$title_start <- ifelse(grepl("^A", ign_revised$title, ignore.case = T), "A", 
+         ifelse(grepl("^B", ign_revised$title, ignore.case = T), "B",
+         ifelse(grepl("^C", ign_revised$title, ignore.case = T), "C",        
+         ifelse(grepl("^D", ign_revised$title, ignore.case = T), "D",
+         ifelse(grepl("^E", ign_revised$title, ignore.case = T), "E",
+         ifelse(grepl("^F", ign_revised$title, ignore.case = T), "F",
+         ifelse(grepl("^G", ign_revised$title, ignore.case = T), "G",
+         ifelse(grepl("^H", ign_revised$title, ignore.case = T), "H",
+         ifelse(grepl("^I", ign_revised$title, ignore.case = T), "I",
+         ifelse(grepl("^J", ign_revised$title, ignore.case = T), "J",
+         ifelse(grepl("^K", ign_revised$title, ignore.case = T), "K",
+         ifelse(grepl("^L", ign_revised$title, ignore.case = T), "L",
+         ifelse(grepl("^M", ign_revised$title, ignore.case = T), "M",
+         ifelse(grepl("^N", ign_revised$title, ignore.case = T), "N",
+         ifelse(grepl("^O", ign_revised$title, ignore.case = T), "O",
+         ifelse(grepl("^P", ign_revised$title, ignore.case = T), "P",
+         ifelse(grepl("^Q", ign_revised$title, ignore.case = T), "Q",
+         ifelse(grepl("^R", ign_revised$title, ignore.case = T), "R",
+         ifelse(grepl("^S", ign_revised$title, ignore.case = T), "S",
+         ifelse(grepl("^T", ign_revised$title, ignore.case = T), "T",
+         ifelse(grepl("^U", ign_revised$title, ignore.case = T), "U",
+         ifelse(grepl("^V", ign_revised$title, ignore.case = T), "V",
+         ifelse(grepl("^W", ign_revised$title, ignore.case = T), "W",
+         ifelse(grepl("^X", ign_revised$title, ignore.case = T), "X",
+         ifelse(grepl("^Y", ign_revised$title, ignore.case = T), "Y",
+         ifelse(grepl("^Z", ign_revised$title, ignore.case = T), "Z","#"))))))))))))))))))))))))))
+
+# New column for games with numbers (sequel) in title
+ign_revised$number <- ifelse(grepl(".*([0-9]+)", ign_revised$title, ignore.case = T), "Yes","No")
+
+# New column for games with franchise name in title
+ign_revised$franchise <- ifelse(grepl("Mario", ign_revised$title, ignore.case = T), "Mario", 
+         ifelse(grepl("Zelda", ign_revised$title, ignore.case = T), "Zelda",
+         ifelse(grepl("Pokemon", ign_revised$title, ignore.case = T), "Pokemon",        
+         ifelse(grepl("Halo", ign_revised$title, ignore.case = T), "Halo",
+         ifelse(grepl("LEGO", ign_revised$title, ignore.case = T), "LEGO",
+         ifelse(grepl("Star Wars", ign_revised$title, ignore.case = T), "Star Wars",
+         ifelse(grepl("Call of Duty", ign_revised$title, ignore.case = T), "Call of Duty",
+         ifelse(grepl("FIFA", ign_revised$title, ignore.case = T), "FIFA",
+         ifelse(grepl("^NBA", ign_revised$title, ignore.case = T), "NBA",
+         ifelse(grepl("Grand Theft Auto", ign_revised$title, ignore.case = T), "Grand Theft Auto",
+         ifelse(grepl("Tom Clancy", ign_revised$title, ignore.case = T), "Tom Clancy",
+         ifelse(grepl("Street Fighter", ign_revised$title, ignore.case = T), "Street Fighter",
+         ifelse(grepl("Warcraft", ign_revised$title, ignore.case = T), "Warcraft",
+         ifelse(grepl("Resident Evil", ign_revised$title, ignore.case = T), "Resident Evil",
+         ifelse(grepl("Metal Gear", ign_revised$title, ignore.case = T), "Metal Gear",
+         ifelse(grepl("Dark Souls", ign_revised$title, ignore.case = T), "Dark Souls",
+         ifelse(grepl("Forza", ign_revised$title, ignore.case = T), "Forza",
+         ifelse(grepl("Final Fantasy", ign_revised$title, ignore.case = T), "Final Fantasy",
+         ifelse(grepl("Uncharted", ign_revised$title, ignore.case = T), "Uncharted","Other")))))))))))))))))))
+
+# New column for top 10 genre
+ign_revised$top_genre <- ifelse(grepl("^Action", ign_revised$genre, ignore.case = T), "Action", 
+         ifelse(grepl("^Adventure", ign_revised$genre, ignore.case = T), "Adventure",
+         ifelse(grepl("^Fighting", ign_revised$genre, ignore.case = T), "Fighting",        
+         ifelse(grepl("^Platformer", ign_revised$genre, ignore.case = T), "Platformer",
+         ifelse(grepl("^Racing", ign_revised$genre, ignore.case = T), "Racing",
+         ifelse(grepl("^RPG", ign_revised$genre, ignore.case = T), "RPG",
+         ifelse(grepl("^Shooter", ign_revised$genre, ignore.case = T), "Shooter",
+         ifelse(grepl("^Sports", ign_revised$genre, ignore.case = T), "Sports",
+         ifelse(grepl("^Strategy", ign_revised$genre, ignore.case = T), "Strategy","Other")))))))))
+```
+
+```{r LR_setup, echo=FALSE}
+# Creating model training and testing set
+# Make Y=1, N=0 for LR to work
+ign_revised_2 <- ign_revised
+ign_revised_2$editors_choice <- ifelse(grepl("Y", ign_revised_2$editors_choice, ignore.case = T), 1,0)
+
+set.seed(500)
+split = sample.split(ign_revised_2$editors_choice, SplitRatio = 0.75)
+EC_Train = subset(ign_revised_2, split == TRUE)
+EC_Test = subset(ign_revised_2, split == FALSE)
+
+```
+
+## Introduction
+
+- Videogames are a multi-billion industry that compromise of numerous gaming studios and publishers, with thousands of game developers 
+
+- Usually success of gaming studios measured in:
+    + Rating of their games 
+    + Awards received 
+    
+- Resulting in:
+    + More consumers
+    + More sales and profits
+    + Receive funding and partnership with major publishers for future projects and development
+
+## Editor's Choice Award
+
+- The Editor’s Choice award from the videogame review website IGN
+
+- Obtaining such awards give an idea for developers on what type of projects they should pursue to earn this achievement for their future games
+
+**Purpose**
+
+- What variables of a video game will allow us to predict if the game will win an Editor's Choice award through a logistic regression model
+
+## Dataset
+
+- Dataset used for this project is from Kaggle, 20 Years of Games by Eric Grinstein (https://www.kaggle.com/egrinstein/20-years-of-games)
+
+- Includes 18,625 video games reviews from IGN that range from games released from 1996-2016: 
+    + 3,517 winners of the Editor's Choice award (18.88%) 
+    + 15,108 were non-winners (81.12%)
+
+## Predictor Variables (Original)    
+  + **X1**
+  + **Score_phrase**
+  + **Title**
+  + **Url**
+  + **Platform**
+  + **Score**
+  + **Genre**
+  + **Editor_choice**
+  + **Release_year**
+  + **Release_month**
+  + **Release_day** 
+  
+## Predictor Variables (Introduced)  
+  + **Tot_Plat**: total number of platforms the videogame is released on
+  + **Word_count**: total number of words in the videogame title
+  + **Char_count**: total number of characters in the videogame title
+  + **Title_start**: the starting letter of the videogame title (#, A-Z)
+  + **Number**: videogame contains a number in the title
+  + **Franchise**: videogame contains a certain franchise name in the title
+  + **Top_genre**: videogame's genre is a top 10 genre
+
+## Exploratory Data Analysis (EDA) 
+
+- From the original dataset we will focus on a 5 year period (2012 to 2016)
+
+-  New dataset consisted of 1,612 games:
+    + 290 winners of the Editor’s Choice Award (17.99%)
+    + 1322 non-winners (82.01%)
+    
+## EDA Plot Analysis: Platform
+Nintendo DS and SteamOS high proportion winners, while Arcade and Web Games some of the non-winners
+
+```{r EDA_Platform, echo=FALSE}
+# Plotting Proportion of Editor's Choice award won per Platform w/ Error Bar 
+prop_Platform_EC <- tot_plat2_tidy 
+prop_Platform_EC$SE <- sqrt(prop_Platform_EC$prop*(1-prop_Platform_EC$prop)/sum(prop_Platform_EC$value)) #SE of prop
+prop_Platform_EC_won <- prop_Platform_EC %>% 
+                        filter(variable == 'Won')
+avg_Platform_EC_won <- mean(prop_Platform_EC_won$prop)
+ggplot(prop_Platform_EC_won, aes(x = Platform, y = prop)) + 
+  geom_point(col = "Blue") +
+  geom_errorbar(aes(ymin=prop-SE, ymax=prop+SE), width=0.2, colour="black") +
+  geom_hline(yintercept = avg_Platform_EC_won, linetype="dashed", color = "red") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.y = element_text(angle = 0, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5, line = 4, face="bold")) +
+        scale_y_continuous(expand = c(0, 0), limits = c(0, 1.1)) +
+        labs(title = "Proportion of Editor's Choice Award by Platform \n from 2012-2016", 
+             x = "Platform", 
+             y = "Proportion of Winners") + 
+  theme(plot.title = element_text(lineheight=1)) #space between title
+```
+
+## EDA Plot Analysis: Top Genre
+Racing, Platformer and Role Playing Games (RPG) were top 3 proportion of winners, while Sports had the lowest
+
+```{r EDA_TopGenre, echo=FALSE}
+# Plotting Proportion of Editor's Choice award won per Top Genre w/ Error Bar
+prop_Top_Genre_EC <- ign_revised %>%
+                      group_by(top_genre, editors_choice) %>%
+                      summarise (n = n()) %>%
+                      mutate(freq = n / sum(n))
+prop_Top_Genre_EC$SE <- sqrt(prop_Top_Genre_EC$freq*(1-prop_Top_Genre_EC$freq)/sum(prop_Top_Genre_EC$n)) #SE of prop
+prop_Top_Genre_EC_won <- prop_Top_Genre_EC %>% 
+                        filter(editors_choice == 'Y')
+avg_Top_Genre_EC_won <- mean(prop_Top_Genre_EC_won$freq)
+ggplot(prop_Top_Genre_EC_won, aes(x = top_genre, y = freq)) + 
+  geom_point(col = "Blue") +
+  geom_errorbar(aes(ymin=freq-SE, ymax=freq+SE), width=0.2, colour="black") +
+  geom_hline(yintercept = avg_Top_Genre_EC_won, linetype="dashed", color = "red") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.y = element_text(angle = 0, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5, line = 4, face="bold")) +
+        scale_y_continuous(expand = c(0, 0), limits = c(0, 1.1)) +
+        labs(title = "Proportion of Editor's Choice Award by Top Genres \n from 2012-2016", 
+             x = "Top Genres", 
+             y = "Proportion of Winners") + 
+  theme(plot.title = element_text(lineheight=1))
+```
+
+## EDA Plot Analysis: Franchise
+Warcraft, Forza and Uncharted were top 3 proportion of winners, while Resident Evil, FIFA, and Star Wars had the lowest
+
+```{r Franchise, echo=FALSE}
+# Plotting Proportion of Editor's Choice award won per Franchise w/ Error Bar (NEW)
+prop_Fran_EC <- ign_revised %>%
+                      group_by(franchise, editors_choice) %>%
+                      summarise (n = n()) %>%
+                      mutate(freq = n / sum(n))
+prop_Fran_EC$SE <- sqrt(prop_Fran_EC$freq*(1-prop_Fran_EC$freq)/sum(prop_Fran_EC$n)) #SE of prop
+prop_Fran_EC_won <- prop_Fran_EC %>% 
+                        filter(editors_choice == 'Y')
+avg_Fran_EC_won <- mean(prop_Fran_EC_won$freq)
+ggplot(prop_Fran_EC_won, aes(x = franchise, y = freq)) + 
+  geom_point(col = "Blue") +
+  geom_errorbar(aes(ymin=freq-SE, ymax=freq+SE), width=0.2, colour="black") +
+  geom_hline(yintercept = avg_Fran_EC_won, linetype="dashed", color = "red") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.y = element_text(angle = 0, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5, line = 4, face="bold")) +
+        scale_y_continuous(expand = c(0, 0), limits = c(0, 1.1)) +
+        labs(title = "Proportion of Editor's Choice Award by Franchise \n from 2012-2016", 
+             x = "Franchise", 
+             y = "Proportion of Winners") + 
+  theme(plot.title = element_text(lineheight=1))
+```
+
+## EDA Plot Analysis: Release Month
+September had the highest proportion of award winners and the December had the lowest
+
+```{r Month, echo=FALSE}
+# Plotting Proportion of Editor's Choice award won per Month w/ Error Bar 
+prop_Month_EC <- ign_revised %>%
+                      group_by(release_month, editors_choice) %>%
+                      summarise (n = n()) %>%
+                      mutate(freq = n / sum(n))
+prop_Month_EC$SE <- sqrt(prop_Month_EC$freq*(1-prop_Month_EC$freq)/sum(prop_Month_EC$n)) #SE of prop
+prop_Month_EC_won <- prop_Month_EC %>% 
+                        filter(editors_choice == 'Y')
+avg_Month_EC_won <- mean(prop_Month_EC_won$freq)
+ggplot(prop_Month_EC_won, aes(x = release_month, y = freq)) + 
+  geom_point(col = "Blue") +
+  geom_errorbar(aes(ymin=freq-SE, ymax=freq+SE), width=0.2, colour="black") +
+  geom_hline(yintercept = avg_Month_EC_won, linetype="dashed", color = "red") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5, line = 4, face="bold")) +
+        scale_x_continuous(expand = c(0, 0), breaks = seq(1,12, by = 1), limits=c(0.5,12.5)) +
+        scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+        labs(title = "Monthly Proportion of Editor's Choice Award \n from 2012-2016", 
+             x = "Month", 
+             y = "Proportion of Winners") + 
+  theme(plot.title = element_text(lineheight=1))
+``` 
+
+## EDA Plot Analysis: Character Count
+The spread was slightly larger in the award winners compared to non-winners, but suggest it was best to limit the count within the winner's IQR, around the median of 18 characters 
+
+```{r CC, echo=FALSE}
+ggplot(ign_revised, aes(x = editors_choice, y = char_count, group = factor(editors_choice))) +
+  geom_boxplot() +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5, line = 4, face="bold")) +
+        scale_y_continuous(expand = c(0, 0), breaks = seq(0,100,by = 10), limits = c(0, 100)) +
+        labs(title = "Character Count of Game Title Winning Editor's Choice Award \n from 2012-2016",
+             x = "Editor's Choice Award",
+             y = "Character Count") + 
+  theme(plot.title = element_text(lineheight=1))
+```
+
+## **Selecting Predictor Variables:**
+
+- The Akaike Information Criterion (AIC) was used to measure the relative quality of the model, where the minimum AIC would be the most optimal. Predictor variables were added or removed in order to minimize the AIC to determine the chosen final model 
+
+Model | AIC
+- | -
+Original | 1189.2
+New | 1126.2 
+Final | 1125.2
+
+```{r LR_Selection, include=FALSE, warning=FALSE}
+# Final Variables
+EC_LR = glm(editors_choice ~ release_month + iPad + iPhone + Linux + Macintosh + `New Nintendo 3DS` + `Nintendo 3DS` + `Nintendo DS` + `Nintendo DSi` + PC + `PlayStation 3` +`PlayStation 4` + `PlayStation Portable` + `PlayStation Vita`+ `Web Games` + Wii + `Wii U` + `Windows Phone` + `Windows Surface` + `Xbox 360` + `Xbox One` + tot_Plat + word_count + char_count + number + franchise + top_genre, data= EC_Train, family = binomial)
+
+summary(EC_LR)
+```
+```{r LR_ProbSum, include=FALSE}
+# Probability Summary of True Outcome
+predictTrain = predict(EC_LR, type = "response")
+summary(predictTrain)
+tapply(predictTrain, EC_Train$editors_choice, mean) # Higher probability of predicting winner than non-winner of EC
+```
+
+## **Confusion Matrix Statistics:** 
+
+  * Sensitivity (True Positive Rate)
+  * Specificity (True Negative Rate)
+  * Accuracy
+  * Error Rate 
+  
+Model | Sensitivity | Specificity | Accuracy | Error Rate
+- | - | - | - | -
+Original | 0.0412 | 0.998 | 0.826 | 0.173
+New | 0.178 | 0.984 | 0.839 | 0.160
+Final | 0.161 | 0.989 | 0.840 | 0.160
+
+
+## **Receiver Operator Character Curve:**
+
+- Pick threshold to maximize sensitivity and specificity for the logistic regression model (t = 0.2)
+- Curve does better than random guessing of award winners
+
+```{r LR_ROC, echo=FALSE}
+ROCRpred = prediction(predictTrain, EC_Train$editors_choice)
+ROCRpref = performance(ROCRpred, "tpr", "fpr") #true positive and false pos rate
+plot(ROCRpref, colorize = TRUE, print.cutoffs.at = seq(0,1,0.1), text.adj = c(-0.2,1.7)) 
+```
+
+## **AUC:**
+- The area under the ROC curve (AUC) was then used to measure the quality of the model where given a random positive and negative proportion of the time, the model is able to guess correctly when a video game wins the Editor's Choice Award. A minimum baseline AUC of 0.50, representing random guessing, and AUC of 1, representing perfect prediction, were used. 
+
+Model | AUC
+- | - 
+Original | 0.656
+New | 0.756
+Final | 0.695
+
+## **Threshold:**
+- Based on these predictor variables, the final regression model was then tested to provide the optimum predictor of winning the Editor's Choice award variable due to the attributes in the confusion matrix and AUC values in the testing dataset. (t = 0.2 was chosen)
+
+Threshold | Sensitivity | Specificity | Accuracy | Error Rate | AUC
+- | - | - | - | - | -
+0.1 | 0.791 | 0.245 | 0.343 | 0.657 | 0.628
+**0.2** | **0.444** | **0.767** | **0.708** | **0.291** | **0.628**
+0.5 | 0.167 | 0.973 | 0.828 | 0.160 | 0.628
+
+## **Recommendations:**
+From the results of this optimum final model, we can make some good recommendations for videogame developers to potentially increase their chance to win the Editor's Choice award. 
+
+## **Platforms:**
+
+- Portable gaming systems: Nintendo 3DS, PlayStation Portable, iPad, iPhone, PlayStation Vita
+
+- In the last 5 years (2012-2016), this new trend of "gaming on the go" has been heavily popularized in the gaming industry market as seen with an influx of mobile and smartphone application games over traditional in-home systems
+
+- In-home consoles: Macintosh and Wii U  
+
+- In-home consoles still an option due to a strong established gaming markets
+
+## **Franchise:**
+
++ Dark Souls
++ Forza
++ Halo
++ Zelda
+
+- Developers and publishers that own the rights to these franchises should be motivated to continue on these projects
+
+-  For new videogame developers or developers from different game studios, these four franchises can provide a blueprint of notable styles, features, and game engines that they can incorporate into their own games (within the scope of not infringing copyright or proprietary laws) 
+
+## **Number:**
+
+- Videogames that had a number in their title either through a numerical or yearly-based format were more likely to win the Editor's Choice award
+
+- This allows one way for developers to grow their games with new iterations and establish them into potential franchise games  
+
+## **Top Genre:**
+
++ Platformer
++ RPG
++ Fighting
+
+- Developers should look into creating games with these genres as they are being more popular in the recent years
+
+- These genres were also some of the higher proportion of award winners in our EDA plots from the original dataset
+
+## **Character Count:**
+
+- Limit the range of the game title's character count to 11 to 30 characters (from IQR range in EDA plot) for the best chance to win the Editor's Choice award
+
+- Having too much characters (potentially words) in the title may confuse consumers and reviewers and cause them not to fully understand the game
+
+## Further Research
+
+- Upgraded Dataset:
+    + A more updated game list of Oculus Rift, PlayStation VR and other VR platforms
+    + Variables like the publishers, gaming studios, and game engines
+    + Videogame units sold and/or their sale numbers
+    
+- Follow-Up:
+    + VR platforms
+    + Discontinued Franchises and Platforms
+    + Nintendo Switch, Zelda
+    
+## Thank You
+
+- Springboard
+
+- Karen Lowe (Mentor)
+
+- Game Developers and Studios
+    
