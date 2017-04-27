@@ -73,8 +73,6 @@ knitr::opts_chunk$set(echo = TRUE)
 # df_sums <- ign_revised %>% select(Android:`Xbox One`) %>% 
 #   mutate(tot_platforms = rowSums(.[1:24]))
 
-#####
-
 #########OLD EDA Plots######################################
 
 # # Plotting Mean Scores of Genre
